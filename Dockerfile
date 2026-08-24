@@ -21,13 +21,13 @@ RUN curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xvj -C
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
 WORKDIR /app
-COPY pyproject.toml README.md ./
+COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
 
-# Install straight into the system interpreter -- a container is already an
-# isolated environment, so a nested venv just adds an activation step for
-# no benefit here.
-RUN uv pip install --system -e .
+# `--frozen` installs exactly what's in uv.lock (no re-resolving at build
+# time) into a venv at /app/.venv -- reproducible builds, and torch resolves
+# to the CUDA 12.4 wheel per pyproject.toml's [tool.uv.sources] override.
+RUN uv sync --frozen --no-dev
 
 # gsplat JIT-compiles its CUDA kernels via torch's cpp_extension loader on
 # first `rasterization()` call (i.e. the first `train` or `view`), not at
@@ -37,5 +37,5 @@ RUN uv pip install --system -e .
 # viser's websocket port, for the interactive viewer.
 EXPOSE 7007
 
-ENTRYPOINT ["gsplat-pipeline"]
+ENTRYPOINT ["uv", "run", "gsplat-pipeline"]
 CMD ["--help"]

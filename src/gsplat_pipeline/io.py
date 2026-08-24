@@ -8,8 +8,6 @@ from typing import Any, Dict
 import numpy as np
 import torch
 
-from .model import get_scales
-
 
 def save_checkpoint(path: Path, params: torch.nn.ParameterDict, step: int, extra: Dict[str, Any] | None = None) -> None:
     path = Path(path)
@@ -34,7 +32,6 @@ def export_ply(path: Path, params: torch.nn.ParameterDict) -> None:
     the original INRIA 3DGS codebase and nerfstudio's splatfacto exporter), so the
     trained scene can be opened in any off-the-shelf Gaussian Splat viewer."""
     means = params["means"].detach().cpu().numpy()
-    scales = get_scales(params).detach().cpu().numpy()
     quats = params["quats"].detach().cpu().numpy()
     opacities = params["opacities"].detach().cpu().numpy()  # stored pre-sigmoid, matches convention below
     sh0 = params["sh0"].detach().cpu().numpy().reshape(means.shape[0], -1)

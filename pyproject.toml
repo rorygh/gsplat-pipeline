@@ -8,6 +8,8 @@ license = { text = "Apache-2.0" }
 dependencies = [
     "torch>=2.1.0",
     "gsplat>=1.4.0,<2.0.0",
+    "packaging>=23.0",  # gsplat's CUDA backend loader imports this at runtime but doesn't declare it itself
+    "setuptools>=68.0",  # torch.utils.cpp_extension (used by gsplat's JIT compile) imports this; not bundled by uv's venvs
     "numpy>=1.24.0",
     "opencv-python-headless>=4.8.0",
     "imageio>=2.31.0",

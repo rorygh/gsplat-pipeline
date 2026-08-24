@@ -74,7 +74,7 @@ def load_scene(data_dir: Path, sparse_path: Optional[Path] = None, images_path: 
         camtoworlds.append(np.linalg.inv(w2c))
 
         if np.any(dist != 0):
-            new_K, roi = cv2.getOptimalNewCameraMatrix(K, dist, (cam.width, cam.height), alpha=0)
+            new_K, _roi = cv2.getOptimalNewCameraMatrix(K, dist, (cam.width, cam.height), alpha=0)
             mapx, mapy = cv2.initUndistortRectifyMap(K, dist, None, new_K, (cam.width, cam.height), cv2.CV_32FC1)
             undistort_maps.append((mapx, mapy))
             Ks.append(new_K)
