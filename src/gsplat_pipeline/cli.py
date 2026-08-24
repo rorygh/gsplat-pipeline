@@ -29,14 +29,27 @@ def train(
     data_dir: Path,
     output_dir: Path,
     colmap_path: Optional[Path] = None,
+    downscale_factor: Optional[int] = None,
     max_steps: int = 30_000,
     device: str = "cuda",
 ) -> None:
-    """Train a Gaussian Splatting scene from a COLMAP reconstruction."""
+    """Train a Gaussian Splatting scene from a COLMAP reconstruction.
+
+    downscale_factor: an explicit power of 2, or unset to auto-pick (keeps the
+    long edge under 1600px, using a pre-existing images_{factor}/ folder if
+    present -- matches nerfstudio's ColmapDataParser default behavior).
+    """
     from .train import TrainConfig
     from .train import train as run_train
 
-    cfg = TrainConfig(data_dir=data_dir, output_dir=output_dir, colmap_path=colmap_path, max_steps=max_steps, device=device)
+    cfg = TrainConfig(
+        data_dir=data_dir,
+        output_dir=output_dir,
+        colmap_path=colmap_path,
+        downscale_factor=downscale_factor if downscale_factor is not None else "auto",
+        max_steps=max_steps,
+        device=device,
+    )
     ckpt = run_train(cfg)
     print(f"[train] final checkpoint: {ckpt}")
 
@@ -47,12 +60,20 @@ def eval_cmd(
     checkpoint: Path,
     output_dir: Path,
     colmap_path: Optional[Path] = None,
+    downscale_factor: Optional[int] = None,
     device: str = "cuda",
 ) -> None:
     """Evaluate a trained checkpoint on its held-out views (PSNR/SSIM + renders)."""
     from .eval import EvalConfig, evaluate
 
-    cfg = EvalConfig(data_dir=data_dir, checkpoint=checkpoint, output_dir=output_dir, colmap_path=colmap_path, device=device)
+    cfg = EvalConfig(
+        data_dir=data_dir,
+        checkpoint=checkpoint,
+        output_dir=output_dir,
+        colmap_path=colmap_path,
+        downscale_factor=downscale_factor if downscale_factor is not None else "auto",
+        device=device,
+    )
     evaluate(cfg)
 
 

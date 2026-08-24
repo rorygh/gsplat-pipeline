@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import torch
 import torch.nn.functional as F
@@ -39,6 +39,10 @@ class TrainConfig:
     output_dir: Path
     colmap_path: Optional[Path] = None
     """Explicit path to the COLMAP sparse model. Auto-detected under data_dir if unset."""
+    downscale_factor: Union[int, str, None] = "auto"
+    """Image downscale factor: an explicit power of 2, "auto" (nerfstudio-style: keeps
+    the long edge under 1600px, using a pre-existing images_{factor}/ folder if present),
+    or None/1 for full resolution."""
 
     max_steps: int = 30_000
     eval_every: int = 8
@@ -82,7 +86,7 @@ def train(cfg: TrainConfig) -> Path:
     torch.manual_seed(cfg.seed)
     device = cfg.device
 
-    scene = load_scene(cfg.data_dir, sparse_path=cfg.colmap_path)
+    scene = load_scene(cfg.data_dir, sparse_path=cfg.colmap_path, downscale_factor=cfg.downscale_factor)
     train_idx, eval_idx = train_eval_split(len(scene.image_names), cfg.eval_every)
     print(f"[data] {len(scene.image_names)} images ({len(train_idx)} train / {len(eval_idx)} eval), "
           f"{scene.points_xyz.shape[0]} SfM points, scene_scale={scene.scene_scale:.3f}")

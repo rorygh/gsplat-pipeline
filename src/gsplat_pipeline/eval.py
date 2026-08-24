@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import imageio
 import numpy as np
@@ -29,6 +29,7 @@ class EvalConfig:
     checkpoint: Path
     output_dir: Path
     colmap_path: Optional[Path] = None
+    downscale_factor: Union[int, str, None] = "auto"
     eval_every: int = 8
     device: str = "cuda"
 
@@ -41,7 +42,7 @@ def psnr(pred: torch.Tensor, gt: torch.Tensor) -> torch.Tensor:
 @torch.no_grad()
 def evaluate(cfg: EvalConfig) -> dict:
     device = cfg.device
-    scene = load_scene(cfg.data_dir, sparse_path=cfg.colmap_path)
+    scene = load_scene(cfg.data_dir, sparse_path=cfg.colmap_path, downscale_factor=cfg.downscale_factor)
     _, eval_idx = train_eval_split(len(scene.image_names), cfg.eval_every)
     eval_dataset = GaussianSplattingDataset(scene, eval_idx)
 

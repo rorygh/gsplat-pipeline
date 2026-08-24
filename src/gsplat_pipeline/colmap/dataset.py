@@ -9,13 +9,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 import cv2
 import numpy as np
 import torch
 
 from .binary import qvec2rotmat, read_model
+
+MAX_AUTO_RESOLUTION = 1600
+"""Matches nerfstudio's ColmapDataParser: auto-picked downscale keeps the
+long edge under this many pixels, so full-resolution photos (common straight
+out of a camera) don't make training absurdly slow by default."""
 
 
 @dataclass
@@ -24,8 +29,8 @@ class SceneData:
     image_names: List[str]
     camtoworlds: np.ndarray  # (N, 4, 4) float64, OpenCV convention (+X right, +Y down, +Z forward)
     Ks: np.ndarray  # (N, 3, 3) undistorted intrinsics, one per image
-    widths: np.ndarray  # (N,) int, post-undistortion
-    heights: np.ndarray  # (N,) int, post-undistortion
+    widths: np.ndarray  # (N,) int, post-downscale/undistortion
+    heights: np.ndarray  # (N,) int, post-downscale/undistortion
     undistort_maps: List[Optional[tuple]]  # per-image (mapx, mapy) or None if already pinhole
     points_xyz: np.ndarray  # (M, 3) float32, sparse SfM points
     points_rgb: np.ndarray  # (M, 3) uint8
@@ -38,10 +43,30 @@ def _undistort_image(image: np.ndarray, mapx, mapy) -> np.ndarray:
     return cv2.remap(image, mapx, mapy, cv2.INTER_LINEAR)
 
 
-def load_scene(data_dir: Path, sparse_path: Optional[Path] = None, images_path: Optional[Path] = None) -> SceneData:
+def _pick_auto_downscale_factor(width: int, height: int) -> int:
+    factor = 1
+    while max(width, height) / factor > MAX_AUTO_RESOLUTION:
+        factor *= 2
+    return factor
+
+
+def load_scene(
+    data_dir: Path,
+    sparse_path: Optional[Path] = None,
+    images_path: Optional[Path] = None,
+    downscale_factor: Union[int, str, None] = "auto",
+) -> SceneData:
     """Load a COLMAP reconstruction. `data_dir` is expected to contain an
     `images/` folder and a `sparse/0/` (or `colmap/sparse/0/`) model, unless
-    overridden via `sparse_path` / `images_path`."""
+    overridden via `sparse_path` / `images_path`.
+
+    `downscale_factor`: an explicit power-of-2 factor, `"auto"` (mirrors
+    nerfstudio: picks the smallest factor keeping the long edge under
+    `MAX_AUTO_RESOLUTION`, falling back to full resolution if a matching
+    `images_{factor}/` folder isn't present -- as shipped by e.g. the
+    Mip-NeRF 360 dataset), or `None`/`1` for full resolution. Only pre-existing
+    `images_{factor}/` folders are used; this pipeline doesn't generate them.
+    """
     data_dir = Path(data_dir)
     if sparse_path is None:
         for candidate in ["sparse/0", "colmap/sparse/0", "sparse"]:
@@ -50,9 +75,22 @@ def load_scene(data_dir: Path, sparse_path: Optional[Path] = None, images_path: 
                 break
         else:
             raise FileNotFoundError(f"No COLMAP sparse model found under {data_dir} (checked sparse/0, colmap/sparse/0)")
-    images_path = images_path or (data_dir / "images")
 
     cameras, images, points3D = read_model(sparse_path)
+
+    first_cam = next(iter(cameras.values()))
+    if downscale_factor == "auto":
+        factor = _pick_auto_downscale_factor(first_cam.width, first_cam.height)
+        if factor > 1 and images_path is None and not (data_dir / f"images_{factor}").exists():
+            print(f"[data] would downscale {factor}x, but {data_dir / f'images_{factor}'} doesn't exist -- using full resolution")
+            factor = 1
+    else:
+        factor = downscale_factor or 1
+
+    if images_path is None:
+        images_path = data_dir / (f"images_{factor}" if factor > 1 else "images")
+    if factor > 1:
+        print(f"[data] using {factor}x downscaled images from {images_path}")
 
     image_ids = sorted(images.keys(), key=lambda i: images[i].name)
     camtoworlds = []
@@ -67,6 +105,10 @@ def load_scene(data_dir: Path, sparse_path: Optional[Path] = None, images_path: 
         im = images[image_id]
         cam = cameras[im.camera_id]
         K, dist = cam.as_intrinsics()
+        target_w, target_h = cam.width // factor, cam.height // factor
+        if factor > 1:
+            K = K.copy()
+            K[:2, :] /= factor
 
         w2c = np.eye(4)
         w2c[:3, :3] = qvec2rotmat(im.qvec)
@@ -74,17 +116,15 @@ def load_scene(data_dir: Path, sparse_path: Optional[Path] = None, images_path: 
         camtoworlds.append(np.linalg.inv(w2c))
 
         if np.any(dist != 0):
-            new_K, _roi = cv2.getOptimalNewCameraMatrix(K, dist, (cam.width, cam.height), alpha=0)
-            mapx, mapy = cv2.initUndistortRectifyMap(K, dist, None, new_K, (cam.width, cam.height), cv2.CV_32FC1)
+            new_K, _roi = cv2.getOptimalNewCameraMatrix(K, dist, (target_w, target_h), alpha=0)
+            mapx, mapy = cv2.initUndistortRectifyMap(K, dist, None, new_K, (target_w, target_h), cv2.CV_32FC1)
             undistort_maps.append((mapx, mapy))
             Ks.append(new_K)
-            widths.append(cam.width)
-            heights.append(cam.height)
         else:
             undistort_maps.append(None)
             Ks.append(K)
-            widths.append(cam.width)
-            heights.append(cam.height)
+        widths.append(target_w)
+        heights.append(target_h)
 
         image_paths.append(images_path / im.name)
         image_names.append(im.name)
