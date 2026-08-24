@@ -1,0 +1,45 @@
+[project]
+name = "gsplat-pipeline"
+version = "0.1.0"
+description = "A minimal, from-scratch COLMAP -> Gaussian Splatting -> viewer pipeline built directly on gsplat."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "torch>=2.1.0",
+    "gsplat>=1.4.0,<2.0.0",
+    "numpy>=1.24.0",
+    "opencv-python-headless>=4.8.0",
+    "imageio>=2.31.0",
+    "pillow>=10.4.0,<11.0.0",
+    "pytorch-msssim>=1.0.0",
+    "viser>=0.2.0",
+    "tyro>=0.8.0",
+    "tqdm>=4.66.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4.0"]
+
+[project.scripts]
+gsplat-pipeline = "gsplat_pipeline.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gsplat_pipeline"]
+
+[tool.uv.sources]
+# PyPI's `torch` wheel is CPU-only; pull the CUDA 12.4 build from PyTorch's
+# own index instead. gsplat JIT-compiles its CUDA kernels against whatever
+# torch is active at first use, so this needs to match your GPU driver's
+# supported CUDA version -- for a different CUDA version, change the index
+# url below (and the matching base image in Dockerfile) to e.g. .../cu121.
+torch = { index = "pytorch-cu124" }
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true

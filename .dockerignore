@@ -1,0 +1,10 @@
+.git
+.gitignore
+data/
+outputs/
+results/
+*.ply
+*.pt
+__pycache__/
+*.pyc
+.venv/

@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.venv/
+dist/
+build/
+
+# runtime data / outputs (large binary artifacts, not source)
+data/
+outputs/
+results/
+*.ply
+*.pt
+wandb/
+
+.DS_Store
