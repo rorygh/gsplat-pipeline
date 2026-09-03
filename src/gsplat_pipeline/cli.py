@@ -86,6 +86,58 @@ def eval_cmd(
 
 
 @app.command
+def mask(
+    image_dir: Path,
+    output_dir: Path,
+    model: str = "birefnet-general",
+    composite: Optional[str] = "white",
+    alpha_matting: bool = False,
+    feather: int = 2,
+) -> None:
+    """Background removal (v0): write per-image foreground masks for an
+    object-centric capture, using a salient-object segmentation model (rembg).
+
+    Appearance-based and per-frame -- good when one object dominates each
+    frame. See docs/BACKGROUND_REMOVAL_PLAN.md for the moving-object case.
+    """
+    from .masking import MaskConfig, run_masking
+
+    run_masking(MaskConfig(
+        image_dir=image_dir, output_dir=output_dir, model=model,
+        composite=composite, alpha_matting=alpha_matting, feather=feather,
+    ))
+
+
+@app.command(name="colmap-report")
+def colmap_report(
+    data_dir: Path,
+    output_dir: Path,
+    colmap_path: Optional[Path] = None,
+    image_dir: Optional[Path] = None,
+) -> None:
+    """Sanity-check a COLMAP sparse model: camera-path plots, per-image
+    connectivity, and reprojection-error distribution (PNGs + JSON).
+
+    data_dir: a COLMAP reconstruction dir (auto-detects sparse/0, colmap/sparse/0);
+    or pass --colmap-path to point straight at the model folder.
+    """
+    from .colmap.report import write_report
+
+    sparse_path = colmap_path
+    if sparse_path is None:
+        for candidate in ("sparse/0", "colmap/sparse/0", "sparse"):
+            if (data_dir / candidate / "cameras.bin").exists():
+                sparse_path = data_dir / candidate
+                break
+        else:
+            raise FileNotFoundError(f"No COLMAP sparse model under {data_dir}")
+    if image_dir is None and (data_dir / "images").is_dir():
+        image_dir = data_dir / "images"
+
+    write_report(sparse_path, output_dir, image_dir=image_dir)
+
+
+@app.command
 def view(checkpoint: Path, port: int = 7007, device: str = "cuda") -> None:
     """Launch the interactive viewer for a trained checkpoint."""
     from .viewer import ViewerConfig, run_viewer

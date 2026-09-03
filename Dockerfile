@@ -9,13 +9,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ln -sf /usr/bin/python3.11 /usr/bin/python3
 
 # COLMAP via a standalone micromamba env: Ubuntu 22.04's apt colmap is an
-# incompatible v3.x build, and libfaiss must be pinned to 1.10.0 (newer
-# conda-forge builds are ABI-incompatible with this colmap build). Wrapped
-# as a script rather than a global LD_LIBRARY_PATH, which can otherwise leak
+# incompatible v3.x build. Use a CUDA-enabled build so SfM feature
+# extraction + matching run on the GPU (the CPU builds' SIFT matcher is
+# ~10+ min for 50 images). Pick a build whose CUDA floor is <= this image's
+# CUDA (12.4): conda-forge's colmap=3.10=gpu* needs __cuda>=12.0; the 3.11+
+# GPU builds need 12.6-12.9 and fail at runtime on a 12.4 driver.
+# CONDA_OVERRIDE_CUDA lets the solver see a GPU at build time (there is none).
+# QT_QPA_PLATFORM=offscreen: COLMAP builds a QApplication even for CLI
+# subcommands and aborts on a headless host without it.
+# Wrapped as a script rather than a global LD_LIBRARY_PATH, which can leak
 # conda's OpenSSL into unrelated system tools (e.g. sshd).
 RUN curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xvj -C /usr/local/bin --strip-components=1 bin/micromamba && \
-    micromamba create -y -p /opt/colmap-env -c conda-forge colmap=4.0.4 "libfaiss=1.10.0=cpu_openblas*" && \
-    printf '#!/bin/bash\nexec env LD_LIBRARY_PATH="/opt/colmap-env/lib:$LD_LIBRARY_PATH" /opt/colmap-env/bin/colmap "$@"\n' > /usr/local/bin/colmap && \
+    CONDA_OVERRIDE_CUDA=12.4 micromamba create -y -p /opt/colmap-env -c conda-forge \
+        "colmap=3.10=gpu*" "openimageio=3.1.*" && \
+    printf '#!/bin/bash\nexec env LD_LIBRARY_PATH="/opt/colmap-env/lib:$LD_LIBRARY_PATH" QT_QPA_PLATFORM=offscreen /opt/colmap-env/bin/colmap "$@"\n' > /usr/local/bin/colmap && \
     chmod +x /usr/local/bin/colmap
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/

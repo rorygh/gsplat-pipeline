@@ -78,12 +78,19 @@ pip install -e .
 
 COLMAP itself isn't a Python package -- install it via your system package
 manager or (recommended, version-pinned) via micromamba, same as the
-[Dockerfile](Dockerfile):
+[Dockerfile](Dockerfile). Use a CUDA-enabled build so SfM runs on the GPU;
+pick one whose CUDA floor is at or below your driver's CUDA version
+(`conda-forge::colmap=3.10=gpu*` needs `__cuda>=12.0`, 3.11+ GPU builds need
+12.6-12.9):
 
 ```bash
-micromamba create -y -p ./colmap-env -c conda-forge colmap=4.0.4
+micromamba create -y -p ./colmap-env -c conda-forge "colmap=3.10=gpu*" "openimageio=3.1.*"
 export PATH="$(pwd)/colmap-env/bin:$PATH"
+export QT_QPA_PLATFORM=offscreen   # COLMAP CLI aborts on a headless host without this
 ```
+
+(A CPU-only `colmap` works too -- pass `gsplat-pipeline sfm --no-use-gpu` --
+but its SIFT matcher is far slower.)
 
 ## Usage
 
