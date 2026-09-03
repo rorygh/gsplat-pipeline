@@ -16,11 +16,19 @@ def sfm(
     output_dir: Path,
     matching_method: Literal["exhaustive", "sequential"] = "exhaustive",
     camera_model: str = "OPENCV",
+    use_gpu: bool = True,
 ) -> None:
-    """Run COLMAP structure-from-motion on a folder of images."""
+    """Run COLMAP structure-from-motion on a folder of images.
+
+    use_gpu: set False for a CPU-only COLMAP build (e.g. conda-forge's
+    `cpu_*` build on a headless pod), otherwise feature extraction/matching
+    abort with no CUDA/GL context.
+    """
     from .colmap.runner import run_sfm
 
-    model_dir = run_sfm(image_dir, output_dir, matching_method=matching_method, camera_model=camera_model)
+    model_dir = run_sfm(
+        image_dir, output_dir, matching_method=matching_method, camera_model=camera_model, use_gpu=use_gpu
+    )
     print(f"[sfm] sparse model written to {model_dir}")
 
 

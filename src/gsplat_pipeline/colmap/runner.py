@@ -9,15 +9,21 @@ with real overlap in, a `sparse/0/{cameras,images,points3D}.bin` model out.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
 from typing import Literal
 
+# COLMAP links Qt even for CLI subcommands and aborts on a headless host
+# ("qt.qpa.xcb: could not connect to display") unless told to run windowless.
+# Harmless where a display exists -- the CLI never opens a window.
+_COLMAP_ENV = {**os.environ, "QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}
+
 
 def _run(cmd: list[str]) -> None:
     print(f"$ {' '.join(cmd)}")
-    subprocess.run(cmd, check=True)
+    subprocess.run(cmd, check=True, env=_COLMAP_ENV)
 
 
 def _use_gpu_flag(binary: str) -> bool:
@@ -26,7 +32,9 @@ def _use_gpu_flag(binary: str) -> bool:
     subcommand help rather than hardcoding a version cutoff -- `colmap -h` alone only
     lists subcommand names, not their flags, so this has to ask `feature_extractor -h`
     specifically. COLMAP prints help to stderr, not stdout."""
-    help_text = subprocess.run([binary, "feature_extractor", "-h"], capture_output=True, text=True).stderr
+    help_text = subprocess.run(
+        [binary, "feature_extractor", "-h"], capture_output=True, text=True, env=_COLMAP_ENV
+    ).stderr
     return "FeatureExtraction.use_gpu" in help_text
 
 
