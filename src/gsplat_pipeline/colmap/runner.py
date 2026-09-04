@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Optional
 from typing import Literal
 
 # COLMAP links Qt even for CLI subcommands and aborts on a headless host
@@ -45,10 +46,16 @@ def run_sfm(
     use_gpu: bool = True,
     camera_model: str = "OPENCV",
     single_camera: bool = True,
+    mask_path: Optional[Path] = None,
 ) -> Path:
     """Run COLMAP feature extraction, matching, and mapping.
 
     Returns the path to the resulting sparse model (`<output_dir>/sparse/0`).
+
+    mask_path: directory of COLMAP-format masks (named `<image_name>.png`,
+    black = ignore). Keypoints are only detected where the mask is white. For a
+    *moving* object give COLMAP a mask of the object with polarity **inverted**
+    (object black) so poses are solved from the static background only.
     """
     if shutil.which("colmap") is None:
         raise RuntimeError("`colmap` not found on PATH. Install it (see README) before running SfM.")
@@ -79,6 +86,7 @@ def run_sfm(
             "--ImageReader.single_camera",
             "1" if single_camera else "0",
         ]
+        + (["--ImageReader.mask_path", str(mask_path)] if mask_path is not None else [])
     )
 
     matcher_cmd = "exhaustive_matcher" if matching_method == "exhaustive" else "sequential_matcher"

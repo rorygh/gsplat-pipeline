@@ -23,7 +23,12 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=7.4.0"]
 viz = ["matplotlib>=3.7.0"]  # gsplat-pipeline colmap-report plots
-masks = ["rembg>=2.0.50", "onnxruntime>=1.16.0"]  # gsplat-pipeline mask (background removal)
+# gsplat-pipeline mask (saliency background removal). onnxruntime-gpu 1.18-1.20 = CUDA 12,
+# matching the cu124 torch pinned above (newer onnxruntime-gpu needs CUDA 13); the CUDA
+# provider reuses the cuDNN/cuBLAS from torch's nvidia-*-cu12 deps. CPU-only host: swap in
+# plain `onnxruntime`.
+masks = ["rembg>=2.0.50", "onnxruntime-gpu>=1.18,<1.21"]
+masks-text = ["transformers>=4.44,<4.49"]  # gsplat-pipeline mask --prompt (CLIPSeg; <4.49 keeps torch 2.4 support, uses the CUDA torch pinned above)
 
 [project.scripts]
 gsplat-pipeline = "gsplat_pipeline.cli:main"

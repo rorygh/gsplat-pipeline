@@ -10,6 +10,7 @@ build/
 data/
 outputs/
 results/
+masks/
 *.ply
 *.pt
 wandb/

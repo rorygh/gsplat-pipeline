@@ -83,6 +83,36 @@ function.
   abstraction or gsplat's own `nerfview` companion package (not used here,
   to keep the dependency list smaller).
 - `io.py`, `cli.py`, `eval.py`, and all the glue holding the above together.
+- `colmap/report.py` -- SfM sanity-check plots (camera path, connectivity,
+  reprojection-error histogram) + JSON, so a bad reconstruction is caught
+  before training. Not modelled on anything upstream.
+- `orientation.py` -- recovers a **+Z-up orbit frame** from the camera
+  trajectory (plane fit + circle fit) and bakes the rigid transform into the
+  checkpoint / PLY / report plots. nerfstudio has an `auto`/`up`/`vertical`
+  orientation option in its dataparsers; this is a from-scratch version
+  specialised to the planar-orbit assumption.
+- `masking.py` -- background removal for object-centric captures: a saliency
+  backend (rembg/BiRefNet) **or** a CLIPSeg text prompt, plus an optical-flow
+  temporal-stabilisation pass (`_stabilize`) and mask cleanup. The rembg and
+  `transformers` deps are optional extras (`masks`, `masks-text`); the core
+  package doesn't import them.
+- **Mask integration** (`train --mask-dir` / `eval --mask-dir` /
+  `sfm --mask-path`): `colmap/dataset.py` gains `_points_in_masks` (drop
+  off-object SfM points) and `gaussians_in_masks` (final prune);
+  `train.py` masks the photometric loss and adds an alpha->mask term.
+  Result: an object-only checkpoint/PLY. Validated on `tissue-paper`
+  (see `reports/`). See `docs/BACKGROUND_REMOVAL_PLAN.md`.
+
+## Not implemented (design notes only)
+
+- **Surface / mesh output** -- `docs/SURFACE_RECONSTRUCTION.md`. SuGaR carries
+  the non-commercial INRIA 3DGS license *and* wouldn't install on the test box
+  (pytorch3d/CUDA-11.8 conda dependency breakage -- documented there). The
+  Apache path is `gsplat.rendering.rasterization_2dgs` + TSDF/Poisson;
+  `reports/tissue-paper/mesh/` has a working TSDF-from-depth prototype.
+- **Multi-class / instance segmentation** -- `docs/SEGMENTATION.md`. Survey of
+  2D backbones, 3D lifting (voting vs feature distillation), and the
+  instance-consistency problem, with a recommended `--semantic-dir` design.
 
 ## Deliberately left out (vs. nerfstudio)
 

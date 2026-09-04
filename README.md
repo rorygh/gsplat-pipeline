@@ -110,6 +110,62 @@ gsplat-pipeline view --checkpoint outputs/scene/checkpoints/final.pt
 # then open http://localhost:7007
 ```
 
+### Orbit-frame alignment (+Z up)
+
+COLMAP fixes the world frame arbitrarily. For an object-centric capture where
+the camera orbits roughly in a plane, `train` / `eval` / `colmap-report`
+recover a natural frame from the camera trajectory -- **+Z up** (normal to the
+orbit plane), origin at the orbit centre -- and bake it into the checkpoint,
+the exported PLY, and the report plots, so every viewer opens the scene the
+same way up. Pass `--no-align` for a non-planar capture, or to keep raw
+COLMAP axes.
+
+### Sanity-check SfM before training
+
+```bash
+gsplat-pipeline colmap-report --data-dir data/scene --output-dir reports/scene
+```
+
+Camera-path plots (top-down / elevation, in the +Z-up frame), per-image
+connectivity, and the reprojection-error distribution -- catches a bad
+reconstruction before you spend 30k steps on it.
+
+### Background removal (object-centric captures)
+
+```bash
+# saliency (BiRefNet), temporally stabilised, GPU:
+gsplat-pipeline mask --image-dir data/scene/images --output-dir masks/scene
+
+# or segment by name (CLIPSeg) when the object isn't the obvious "subject":
+gsplat-pipeline mask --image-dir data/scene/images --output-dir masks/scene \
+    --prompt "a car" --threshold 0.35
+```
+
+Writes `mask/<stem>.png` (+ `images_masked/`, `contact_sheet.jpg`) under
+`./masks/` (gitignored). `--temporal` (default on) runs an optical-flow pass
+over the ordered frames to kill per-frame flicker. Needs the `masks` extra
+(`onnxruntime-gpu`); `--prompt` also needs `masks-text` (`transformers`).
+
+**Training an object-only splat** -- pass the masks to `train` (and `eval`):
+
+```bash
+gsplat-pipeline train --data-dir data/scene --output-dir outputs/scene \
+    --mask-dir masks/scene/mask
+gsplat-pipeline eval  --data-dir data/scene --output-dir outputs/scene \
+    --checkpoint outputs/scene/checkpoints/final.pt --mask-dir masks/scene/mask
+```
+
+`--mask-dir` drops off-object SfM points, restricts the photometric loss to
+the object, supervises the rendered alpha towards the mask, and prunes the
+final model to Gaussians on the object -- the checkpoint and PLY contain the
+object only. `sfm --mask-path <dir>` (COLMAP-named masks from `mask
+--colmap-naming`) additionally solves poses from the object; for a *moving*
+object add `--invert` so SfM uses the static background instead.
+
+See [docs/BACKGROUND_REMOVAL_PLAN.md](docs/BACKGROUND_REMOVAL_PLAN.md) and
+[docs/SEGMENTATION.md](docs/SEGMENTATION.md) (multi-class / instance survey,
+not yet implemented).
+
 Already have a COLMAP model from elsewhere (e.g. the Mip-NeRF 360 dataset,
 which ships its sparse model at `<scene>/sparse/0` rather than the
 `sfm` command's default `<output>/sparse/0`)? Skip step 1 and point `train`
@@ -123,17 +179,23 @@ photos: `IMAGE_DIR=photos/ scripts/run_pipeline.sh`.
 
 ```
 src/gsplat_pipeline/
-├── cli.py              entry point (sfm / train / eval / view subcommands)
+├── cli.py              entry point (sfm / train / eval / view / colmap-report / mask)
 ├── colmap/
 │   ├── binary.py        cameras.bin / images.bin / points3D.bin reader
 │   ├── runner.py         subprocess wrapper around the `colmap` CLI
 │   └── dataset.py        COLMAP model + images -> undistorted (pose, K, image) samples
+│   └── report.py         SfM sanity-check plots + JSON (colmap-report)
+├── orientation.py       recover a +Z-up orbit frame from the camera path
+├── masking.py           background removal (saliency / text prompt + temporal)
 ├── model.py             Gaussian parameter init + per-parameter optimizers
 ├── train.py             the training loop
 ├── eval.py              PSNR/SSIM + held-out-view renders
 ├── viewer.py             viser-based interactive viewer
 └── io.py                checkpoint save/load + .ply export
 ```
+
+`reports/` holds checked-in example run reports; `masks/`, `data/`, and
+`outputs/` are gitignored working directories.
 
 ## License
 

@@ -119,6 +119,12 @@ def run_viewer(cfg: ViewerConfig) -> None:
     print(f"[viewer] loaded checkpoint at step {step}, {params['means'].shape[0]} gaussians")
 
     server = viser.ViserServer(port=cfg.port)
+    # The scene is baked into a +Z-up orbit frame at load time (see
+    # orientation.py), so point viser's navigation the same way.
+    aligned = meta.get("transform") is not None and not np.allclose(np.asarray(meta["transform"]), np.eye(4))
+    if aligned:
+        server.scene.set_up_direction("+z")
+        print("[viewer] scene is in the +Z-up orbit frame")
     loops: list[_ClientRenderLoop] = []
 
     @server.on_client_connect

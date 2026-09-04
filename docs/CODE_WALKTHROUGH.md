@@ -8,11 +8,14 @@ checkpoint/PLY I/O → eval → viewer.
 File tree under `src/gsplat_pipeline/`:
 
 ```
-cli.py              subcommand dispatch (sfm / train / eval / view)
+cli.py              subcommand dispatch (sfm / train / eval / view / colmap-report / mask)
 colmap/
   binary.py         hand-written reader for COLMAP's *.bin sparse model
   runner.py         subprocess wrapper around the `colmap` CLI
   dataset.py        COLMAP model + images -> undistorted (pose, K, image) samples
+  report.py         SfM sanity-check plots + JSON (colmap-report)
+orientation.py      recover a +Z-up orbit frame from the camera trajectory
+masking.py          background removal (saliency / CLIPSeg prompt + temporal pass)
 model.py            Gaussian parameter init + per-parameter optimizers/scheduler
 train.py            the training loop
 io.py               checkpoint save/load + .ply export
@@ -21,8 +24,8 @@ viewer.py           viser-based interactive viewer
 ```
 
 Supporting files: `tests/test_colmap_binary.py`, `tests/test_model.py`,
-`scripts/run_pipeline.sh`, `Dockerfile`, `.github/workflows/docker-publish.yml`,
-`pyproject.toml`.
+`tests/test_orientation.py`, `tests/test_masking.py`, `scripts/run_pipeline.sh`,
+`Dockerfile`, `.github/workflows/docker-publish.yml`, `pyproject.toml`.
 
 ---
 
@@ -302,6 +305,18 @@ The core loader. Steps:
    optimizer uses to normalize step sizes.
 10. Return the populated `SceneData`.
 
+### Object masks (`mask_dir=` on `load_scene`)
+When a mask dir is given, `_resolve_mask_paths` matches `<stem>.png` to each
+image (None where missing). `_points_in_masks` then builds a keep-mask over
+`points3D`: a point survives only if it projects inside the **dilated** mask
+of ≥1 observing view (`_load_working_mask` brings each PNG into the
+downscaled+undistorted frame the poses live in). Off-object points are
+dropped before alignment, so `points_xyz` seeds Gaussians on the object only.
+`GaussianSplattingDataset.__getitem__` additionally returns a `mask` tensor
+(ones if no mask). `gaussians_in_masks` is the same projection test applied to
+trained Gaussian centres — used by `train.py` for the final prune.
+`orientation.orbit_frame` is unaffected (it uses camera centres, not points).
+
 ### `train_eval_split(num_images, eval_every=8) -> (train_idx, eval_idx)`
 `indices = arange(num_images)`. `eval_idx` = indices where `i % 8 == 0`
 (0, 8, 16, ...); `train_idx` = the rest. Matches the Mip-NeRF 360 / nerfstudio
@@ -505,6 +520,10 @@ Step by step:
    h. **Loss:** `l1 = F.l1_loss(pred, gt)`;
       `ssim_loss = 1 - ssim_fn(pred.permute(0,3,1,2), gt.permute(0,3,1,2))`
       (SSIM wants NCHW); `loss = 0.8 * l1 + 0.2 * ssim_loss`.
+      **With `mask_dir`:** `pred` and `gt` are each composited onto the *same*
+      background colour outside the mask before L1/SSIM (windowed SSIM can't be
+      masked pointwise), and `loss += alpha_mask_lambda * F.mse_loss(alpha,
+      mask)` so opacity is driven to zero off-object.
    i. `loss.backward()`.
    j. **Optimizer step:** for each of the six optimizers: `opt.step()` then
       `opt.zero_grad(set_to_none=True)`. Then `means_scheduler.step()`.
@@ -519,6 +538,10 @@ Step by step:
       step+1, extra={sh_degree, scene_scale})`; if `save_ply`,
       `export_ply(output_dir / "point_cloud" / f"step-...ply", params)`;
       `tqdm.write` a line.
+10a. **With `mask_dir` + `prune_to_mask`:** after the loop, `gaussians_in_masks`
+    projects every Gaussian centre into every training view; any centre that
+    never lands in a mask is dropped (a fresh `ParameterDict` — optimizers are
+    done, so no state to fix). Guarantees the saved model is object-only.
 10. After the loop: `save_checkpoint(ckpt_dir / "final.pt", ...)` and return
     that path.
 
@@ -667,6 +690,92 @@ when that client's camera has moved.
 
 ---
 
+## 9b. `orientation.py` — the +Z-up orbit frame
+
+COLMAP's world frame is arbitrary (gauge freedom: the reconstruction is only
+defined up to a rigid transform + scale). For a roughly planar orbit this
+module recovers a natural frame and everything downstream bakes it in.
+
+### `orbit_frame(camera_centers, camera_down=None) -> (4,4)`
+Returns a rigid transform `T` with `p_new = T @ [p; 1]`:
+1. **Plane fit.** SVD of the centred camera positions; the smallest
+   right-singular vector is the orbit-plane normal.
+2. **Up disambiguation.** The normal's sign is fixed by `camera_down` (each
+   camera's local +Y, i.e. "down" in OpenCV) — `up_hint = -mean(camera_down)`;
+   flip the normal if it disagrees. Falls back to COLMAP +Z if no hint.
+3. **Level.** `_shortest_arc(normal, +Z)` rotates the plane flat.
+4. **Recentre.** In the levelled frame, `_circle_center_2d` (algebraic /
+   Kåsa circle fit, with a collinearity guard) finds the orbit centre; the
+   origin moves there, on the mean camera-plane height.
+5. **Deterministic yaw.** Rotate about +Z so the first camera (by sorted
+   filename) lands on the +X axis — makes the frame reproducible run to run.
+- `< 3` cameras → identity (nothing to fit).
+
+### `apply_to_camtoworlds(T, c2w)` / `apply_to_points(T, xyz)`
+Batched left-multiply for `(N,4,4)` poses; affine map for `(M,3)` points.
+Both are pure rotation+translation, so distances / `scene_scale` are
+unchanged and training is exactly equivariant (result identical up to `T`).
+
+### Where it's applied
+- `colmap/dataset.load_scene(..., align=True)` — transforms `camtoworlds`
+  and `points_xyz`, stores `T` on `SceneData.transform`.
+- `train.py` — writes `T` into the checkpoint `extra` (and the PLY is exported
+  from the already-transformed params).
+- `eval.py` — re-derives the *same* `T` deterministically from the same
+  COLMAP model, so eval poses match the trained scene.
+- `viewer.py` — reads `meta["transform"]`; if non-identity, calls
+  `server.scene.set_up_direction("+z")`.
+- `colmap/report.py` — same `T` on the plotted camera path + SfM points.
+- Opt out everywhere with `--no-align`.
+- Tests: `tests/test_orientation.py` (flat/level, up-not-down, first-camera-
+  on-+X, determinism, distance preservation).
+
+## 9c. `colmap/report.py` — SfM sanity check
+
+`build_report(sparse_dir, image_dir=None, align=True)` reads the model,
+optionally aligns the camera path + points to the orbit frame, and computes:
+registered-image count, camera models, track-length stats, mean reprojection
+error, per-image observation counts. `_plot` (matplotlib, `Agg`) writes three
+PNGs — `cameras_path.png` (top-down X-Y + elevation X-Z, view-direction
+quivers, SfM points as faint context clipped to the orbit), `cameras_3d.png`,
+`sfm_health.png` (obs/image bar + track-length + reproj-error histograms).
+`write_report` also dumps `colmap_report.json` (arrays stripped). matplotlib
+is the optional `viz` extra; without it, JSON only.
+
+## 9d. `masking.py` — background removal
+
+Per-frame foreground masks for object-centric captures. Optional deps: rembg
+(`masks` extra) and/or `transformers` (`masks-text`).
+
+### Raw per-frame maskers
+- `_saliency_masker(model, alpha_matting)` — wraps `rembg.remove(...,
+  only_mask=True)`. `_load_session` picks `CUDAExecutionProvider` when
+  `onnxruntime-gpu` is present, and `_preload_cuda_libs()` `ctypes.CDLL`s the
+  cuDNN/cuBLAS `.so`s from torch's bundled `nvidia-*-cu12` wheels into the
+  global namespace first (onnxruntime's provider dlopens them by soname).
+- `_clipseg_masker(prompt)` — `CIDAS/clipseg-rd64-refined` via `transformers`;
+  text prompt → sigmoid heatmap → resize to the image. Uses CUDA if torch sees
+  a GPU.
+
+### Cleanup + stabilisation
+- `_clean_binary(prob, threshold)` → threshold, `_largest_component` (drop
+  speckle), `_fill_holes` (flood-fill from a corner).
+- `_stabilize(probs, grays, window, area_gate)` — `cv2.DISOpticalFlow`
+  between consecutive frames; `_compose` chains single-step flows, `_warp`
+  samples via `cv2.remap`. Each frame's soft mask becomes a distance-weighted
+  vote over its `±window` flow-warped neighbours; a frame whose area deviates
+  more than `area_gate` from the local median is dropped from its own vote.
+  `< 3` frames → no-op.
+
+### `run_masking(cfg) -> dict`
+Load images (sorted) → raw masker over all frames → (if `temporal`) downscale
+to `flow_max_width`, `_stabilize`, upscale back → per-frame `_clean_binary` +
+feather → write `mask/<stem>.png`, `images_masked/<name>` (background flattened
+to `composite` colour), `contact_sheet.jpg`. Returns stats including
+`area_jitter` (mean `|Δ area|` between frames — the stability proxy).
+Tests: `tests/test_masking.py` (cleanup helpers, warp/compose, `_stabilize`
+repairs a dropped frame / leaves a good sequence alone) — no model downloads.
+
 ## 10. Supporting files
 
 ### `scripts/run_pipeline.sh`
@@ -739,8 +848,16 @@ per-commit). Checkout → buildx → Docker Hub login (`DOCKERHUB_USERNAME` /
   `get_colors` in `model.py` undo these at every render call (train, eval,
   viewer all import them). The `.ply` export writes the **stored** (pre-
   activation) values, matching 3DGS-ecosystem convention.
-- **Checkpoint payload:** `{step, params, sh_degree, scene_scale}`. `eval`
-  and `viewer` both read `sh_degree` from it (default 3 if missing).
+- **Checkpoint payload:** `{step, params, sh_degree, scene_scale, transform}`.
+  `eval` and `viewer` read `sh_degree` (default 3 if missing); `viewer` reads
+  `transform` to set the viser up-direction. The scene geometry is already in
+  the orbit frame — `transform` is provenance, not something viewers must
+  apply.
+- **Orbit-frame alignment:** `orientation.orbit_frame` is called (with the
+  same COLMAP camera centres) by `load_scene`, `eval`, and `colmap-report`,
+  and is deterministic, so all three agree. `--align` / `--no-align` is a
+  flag on `train` / `eval` / `colmap-report`; it must match between a
+  checkpoint and its eval.
 - **Densification ownership:** `gsplat.strategy.DefaultStrategy` owns the
   Gaussian count and mutates the six per-parameter Adam optimizers in place;
   the training loop just calls `step_pre_backward` (before `.backward()`) and

@@ -20,7 +20,7 @@ from gsplat.strategy import DefaultStrategy
 from pytorch_msssim import SSIM
 from tqdm import tqdm
 
-from .colmap.dataset import GaussianSplattingDataset, load_scene, train_eval_split
+from .colmap.dataset import GaussianSplattingDataset, gaussians_in_masks, load_scene, train_eval_split
 from .io import export_ply, save_checkpoint
 from .model import (
     GaussianModelConfig,
@@ -43,6 +43,20 @@ class TrainConfig:
     """Image downscale factor: an explicit power of 2, "auto" (nerfstudio-style: keeps
     the long edge under 1600px, using a pre-existing images_{factor}/ folder if present),
     or None/1 for full resolution."""
+    align: bool = True
+    """Bake a +Z-up orbit frame (recovered from the camera trajectory) into the
+    trained scene. Assumes a roughly planar orbit; set False to keep COLMAP axes."""
+    mask_dir: Optional[Path] = None
+    """Directory of per-image object masks (`<stem>.png`, 255 = object). When set:
+    SfM points off the object are dropped, the photometric loss is restricted to
+    the masked region, the rendered alpha is supervised towards the mask, and the
+    final model is pruned to Gaussians that land on the object -- so the result
+    contains the object only."""
+    alpha_mask_lambda: float = 0.5
+    """weight of the (rendered alpha -> mask) supervision term (mask_dir only)."""
+    prune_to_mask: bool = True
+    """after training, drop Gaussians whose centre never projects into any
+    training mask (mask_dir only)."""
 
     max_steps: int = 30_000
     eval_every: int = 8
@@ -86,7 +100,9 @@ def train(cfg: TrainConfig) -> Path:
     torch.manual_seed(cfg.seed)
     device = cfg.device
 
-    scene = load_scene(cfg.data_dir, sparse_path=cfg.colmap_path, downscale_factor=cfg.downscale_factor)
+    scene = load_scene(cfg.data_dir, sparse_path=cfg.colmap_path, downscale_factor=cfg.downscale_factor,
+                       align=cfg.align, mask_dir=cfg.mask_dir)
+    masked = scene.mask_paths is not None
     train_idx, eval_idx = train_eval_split(len(scene.image_names), cfg.eval_every)
     print(f"[data] {len(scene.image_names)} images ({len(train_idx)} train / {len(eval_idx)} eval), "
           f"{scene.points_xyz.shape[0]} SfM points, scene_scale={scene.scene_scale:.3f}")
@@ -135,6 +151,7 @@ def train(cfg: TrainConfig) -> Path:
         K = batch["K"].to(device)[None]
         width, height = batch["width"], batch["height"]
         gt_image = (batch["image"].to(device) / 255.0)[None]
+        mask = batch["mask"].to(device)[None] if masked else None
 
         viewmat = _viewmat_from_camtoworld(camtoworld[0])[None]
         sh_degree_to_use = min(step // cfg.sh_degree_interval, cfg.model.sh_degree)
@@ -163,9 +180,20 @@ def train(cfg: TrainConfig) -> Path:
         pred_image = render[..., :3] + (1 - alpha) * background
         pred_image = torch.clamp(pred_image, 0.0, 1.0)
 
-        l1 = F.l1_loss(pred_image, gt_image)
-        ssim_loss = 1 - ssim_fn(pred_image.permute(0, 3, 1, 2), gt_image.permute(0, 3, 1, 2))
-        loss = (1 - cfg.ssim_lambda) * l1 + cfg.ssim_lambda * ssim_loss
+        if masked:
+            # restrict photometry to the object: composite pred and gt onto the
+            # same colour outside the mask (so windowed SSIM still works), and
+            # push the rendered alpha towards the mask so nothing grows off-object.
+            pred_c = pred_image * mask + background * (1 - mask)
+            gt_c = gt_image * mask + background * (1 - mask)
+            l1 = F.l1_loss(pred_c, gt_c)
+            ssim_loss = 1 - ssim_fn(pred_c.permute(0, 3, 1, 2), gt_c.permute(0, 3, 1, 2))
+            loss = ((1 - cfg.ssim_lambda) * l1 + cfg.ssim_lambda * ssim_loss
+                    + cfg.alpha_mask_lambda * F.mse_loss(alpha, mask))
+        else:
+            l1 = F.l1_loss(pred_image, gt_image)
+            ssim_loss = 1 - ssim_fn(pred_image.permute(0, 3, 1, 2), gt_image.permute(0, 3, 1, 2))
+            loss = (1 - cfg.ssim_lambda) * l1 + cfg.ssim_lambda * ssim_loss
         loss.backward()
 
         for opt in optimizers.values():
@@ -184,12 +212,23 @@ def train(cfg: TrainConfig) -> Path:
                 ckpt_path,
                 params,
                 step + 1,
-                extra={"sh_degree": cfg.model.sh_degree, "scene_scale": scene.scene_scale},
+                extra={"sh_degree": cfg.model.sh_degree, "scene_scale": scene.scene_scale, "transform": scene.transform},
             )
             if cfg.save_ply:
                 export_ply(output_dir / "point_cloud" / f"step-{step + 1:09d}.ply", params)
             tqdm.write(f"[checkpoint] step {step + 1}: {params['means'].shape[0]} gaussians -> {ckpt_path}")
 
+    if masked and cfg.prune_to_mask:
+        with torch.no_grad():
+            keep = gaussians_in_masks(params["means"].detach().cpu().numpy(), scene, train_idx)
+        keep_t = torch.from_numpy(keep).to(device)
+        n0 = params["means"].shape[0]
+        params = torch.nn.ParameterDict({k: torch.nn.Parameter(v[keep_t].detach()) for k, v in params.items()})
+        print(f"[train] pruned to object mask: {n0} -> {params['means'].shape[0]} gaussians")
+
     final_path = ckpt_dir / "final.pt"
-    save_checkpoint(final_path, params, cfg.max_steps, extra={"sh_degree": cfg.model.sh_degree, "scene_scale": scene.scene_scale})
+    save_checkpoint(final_path, params, cfg.max_steps,
+                    extra={"sh_degree": cfg.model.sh_degree, "scene_scale": scene.scene_scale, "transform": scene.transform})
+    if cfg.save_ply:
+        export_ply(output_dir / "point_cloud" / "final.ply", params)
     return final_path

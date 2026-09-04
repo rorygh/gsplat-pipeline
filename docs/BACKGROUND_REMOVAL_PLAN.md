@@ -18,31 +18,60 @@ The eventual captures are regime B (car drives, camera fixed or moving).
 
 ## What the mask feeds into
 
-A per-image binary mask `mask/<name>.png` (255 = object, 0 = background) is
-consumed at three points, in increasing order of impact:
+A per-image binary mask `mask/<stem>.png` (255 = object, 0 = background) is
+consumed at four points. **All four are implemented** (`train --mask-dir`,
+`sfm --mask-path`):
 
-1. **COLMAP feature extraction** — `--ImageReader.mask_path`. Keypoints are
-   only detected inside the mask, so SfM poses are solved from the object +
-   nothing else. *Caveat:* a moving object gives COLMAP inconsistent geometry;
-   for regime B you mask the object OUT for SfM (solve poses from the static
-   world) and mask it IN for training. Two different masks, opposite polarity.
-2. **SfM point-cloud seeding** — drop `points3D` whose track is entirely
-   outside the object masks before `init_gaussians`, so no Gaussians start
-   life on the background.
-3. **Training loss** — apply the mask to the L1/SSIM loss (and composite the
-   masked-out region to a constant colour) so gradients never ask a Gaussian
-   to reconstruct the background. This is what actually keeps the background
-   out of the final splat.
+1. **COLMAP feature extraction** — `--ImageReader.mask_path` (`run_sfm(...,
+   mask_path=)`). Keypoints only inside the mask → poses from the object.
+   *Caveat:* a moving object gives COLMAP inconsistent geometry; there you
+   mask the object **OUT** for SfM (`mask --invert --colmap-naming`, poses
+   from the static world) and **IN** for training. Opposite polarity.
+2. **SfM point-cloud seeding** — `_points_in_masks` in `colmap/dataset.py`:
+   a point survives only if it projects inside the (dilated) mask in ≥1 of
+   its observing views. Everything else — the whole background — is dropped
+   before `init_gaussians`.
+3. **Training loss** — `train.py`: composite pred and GT onto the same colour
+   outside the mask (so windowed SSIM still works), L1+SSIM on that, **plus**
+   an `alpha_mask_lambda · MSE(rendered_alpha, mask)` term so no Gaussian
+   grows off-object.
+4. **Final prune** — `gaussians_in_masks`: after training, drop any Gaussian
+   whose centre never projects into a training mask. Guarantees the saved
+   checkpoint/PLY is the object only.
 
-Only (3) is strictly required for a clean result; (1) and (2) improve pose
-quality and reduce the floaters (3) then has to prune.
+(3)+(4) are what make the result object-only; (1)+(2) reduce the work they
+have to do. Measured on `tissue-paper`: SfM seed 6853 → 1757 points on the
+object; see `reports/` for the masked-vs-unmasked comparison.
 
 ---
 
-## Regime A — appearance-based (implemented as `gsplat-pipeline mask`, v0)
+## Regime A — appearance-based (implemented as `gsplat-pipeline mask`)
 
-Per-frame salient-object segmentation. No temporal or multi-view reasoning —
-each image is segmented independently by "what is the subject of this photo".
+**Status (v0.2):** two raw-mask backends + a temporal-stabilisation pass.
+
+- **Saliency** (default): rembg / BiRefNet, per-frame. GPU via
+  `onnxruntime-gpu` (`_preload_cuda_libs` reuses torch's bundled cuDNN/cuBLAS).
+- **Text prompt** (`--prompt "a car"`): CLIPSeg (`transformers`) maps the
+  phrase to a soft mask; thresholded (`--threshold`, default 0.5) + cleaned.
+  Disambiguates scenes where saliency latches onto the wrong subject.
+- **Temporal stabilisation** (`--temporal`, on by default,
+  `masking._stabilize`): DIS optical flow between consecutive frames; each
+  soft mask is re-estimated as a flow-warped vote over a ±`temporal_window`
+  window, and any frame whose area jumps past `temporal_area_gate` of the
+  local median is rebuilt from neighbours. Measured on `car-walkaround`:
+  frame-to-frame area jitter 12.1% → 7.2% (saliency) and → 3.6% (prompt).
+- **Cleanup** (`_clean_binary`): threshold → largest connected component →
+  fill holes → feather.
+- **Outputs**: `mask/<stem>.png`, `images_masked/`, `contact_sheet.jpg`
+  (thumbnails with the mask outlined -- for eyeballing stability), plus an
+  `area_jitter` number in the returned stats. Default dir `./masks/`
+  (gitignored).
+
+What's still missing from v0.2: multi-view hull consistency, SAM 2 video
+propagation, and -- the actually-important part -- wiring the masks into
+training (loss + point filtering + SfM). See below.
+
+### Per-frame backend notes
 
 - **Model:** BiRefNet (`birefnet-general` via `rembg`) — high-resolution
   dichotomous segmentation, automatic (no prompt), commercially licensed
@@ -55,7 +84,10 @@ each image is segmented independently by "what is the subject of this photo".
 - **Failure signal:** `mask` already flags frames whose foreground is
   < 1 % of the image (`suspicious_images` in the JSON).
 
-### v0 → v1 hardening (still appearance-based)
+### v1 hardening (still appearance-based)
+- **Temporal propagation via optical flow** — *done in v0.2* (`_stabilize`).
+- **Text-prompted segmentation** — *done in v0.2* (CLIPSeg `--prompt`). A
+  heavier GroundingDINO→SAM 2 path is still an option for hard cases.
 - **Multi-view consistency check.** Un-project each mask into 3D using the
   COLMAP poses + a coarse depth (median SfM-point depth in the mask), take
   the intersection of the visual hull across all views, re-project → a
@@ -124,15 +156,16 @@ Worth building the capture protocol around.
 
 ## Recommended path
 
-1. **v0 (done):** `gsplat-pipeline mask` — BiRefNet per-frame. Validate on
-   `car-walkaround`. Good enough for regime-A object splats today.
-2. **v1:** wire masks into the pipeline — `--mask-dir` on `train` (loss +
-   composite), mask-aware `points3D` filtering in `load_scene`, and
-   `--ImageReader.mask_path` in the SfM runner. This is the high-value work
-   and is independent of how the masks were produced.
-3. **v1.5:** add SAM 2 video propagation as a second `mask` backend
-   (`--model sam2`, seed frame + click or auto-box) for stability on ordered
-   captures.
+1. **v0.2 (done):** `gsplat-pipeline mask` — saliency **or** CLIPSeg text
+   prompt, plus an optical-flow temporal-stabilisation pass and a contact
+   sheet. Validated on `car-walkaround` and `tissue-paper`.
+2. **v1 (done):** masks wired into the pipeline — `train --mask-dir` (point
+   filter + masked loss + alpha supervision + final prune), `eval --mask-dir`
+   (metrics on the object region), `sfm --mask-path`, and `mask --invert
+   --colmap-naming` for the moving-object SfM polarity.
+3. **v1.5 (next):** SAM 2 video propagation as a third `mask` backend for the
+   hardest ordered captures; multi-view hull consistency as a backend-agnostic
+   refinement (reuses the poses `orientation.py` already needs).
 4. **Regime B, first cut:** B1 (reconstruction residual) — small, reuses the
    COLMAP stage, no new deps. Ship it as `mask --mode motion`.
 5. **Regime B, quality:** integrate **SegAnyMo** as `mask --mode motion
