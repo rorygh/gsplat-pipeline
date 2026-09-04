@@ -113,17 +113,55 @@ Masking first matters a lot: on the **unmasked** splat the TSDF volume also
 tries to fuse the table + background terrain, blowing up to ~40 GB RAM. The
 `--mask-dir` object-only splat meshes in a bounded volume, fast.
 
+## `gsplat-pipeline sugar` -- SuGaR-lite, built here  (Apache, `src/sugar.py`)
+
+A compact re-implementation of SuGaR's *ideas* on top of `gsplat`, added as a
+**separate subcommand** that never touches `train.py`:
+
+- **`sugar align`** -- loads a trained checkpoint and runs a short refinement
+  (default 3000 steps) with the photometric loss plus:
+  - *flatten*: drive each Gaussian's thinnest axis toward zero, with a
+    `relu(max_axis - init)` term + a hard scale clamp so the discs don't blow
+    up to compensate (an early version without these produced 5-unit sheets
+    that made TSDF fusion OOM);
+  - *opacify*: `min(op, 1-op)` -> opaque shells;
+  - *normal consistency*: render each Gaussian's thin-axis direction and align
+    it with the normal implied by the rendered depth (2DGS/GOF trick, no SDF
+    sampling).
+  With `--mask-dir` it also prunes to the object at the end. -> `surface.pt`.
+- **`sugar mesh`** -- `--method tsdf` (render depth, Open3D `ScalableTSDFVolume`)
+  or `--method poisson` (sample the flat discs, normals = the thin axis
+  oriented outward, screened Poisson).
+- **`sugar full`** -- align then mesh.
+
+### Experiment (`tissue-paper`, masked 3k-step checkpoint, A4000)
+
+| | |
+|---|---|
+| `sugar align`, 1500 steps | **~2 min**; flatten metric 0.16 -> ~0, normal-consistency 0.28 -> 0.19, L1 held at 0.003 (photometry preserved) |
+| `sugar mesh --method tsdf` (voxel 5 mm) | ~1 min, 1.69 M verts, not watertight |
+| `sugar mesh --method poisson` | **hung** -- Open3D 0.19's `create_from_point_cloud_poisson` never returned on this box for ~100 k points (tried 3×). Works elsewhere; needs revisiting or swapping for `pymeshlab` / a CUDA Poisson. |
+
+Result render: `reports/tissue-paper/mesh/sugar_aligned_tsdf_views.png`.
+Honest read: the alignment **converges and does flatten the Gaussians**, but
+the mesh is only marginally cleaner than plain TSDF here -- because (a) the
+base splat is an undercooked 3k-step run, (b) TSDF fuses *rendered depth*,
+which stays noisy regardless of Gaussian shape, and (c) the payoff path
+(Poisson straight off the aligned discs, using their orientations as normals
+-- SuGaR's actual extraction step) is the one that hangs. A fair test wants a
+full 30k splat + a working Poisson backend.
+
 ## Recommendation
 
-1. **Short term:** run upstream SuGaR from its own Docker image on the
-   exported `point_cloud/*.ply` if a mesh is needed and the non-commercial
-   license is acceptable. Don't add it to this env.
-2. **Proper integration (Apache):** add `train --mesh` that swaps in
-   `rasterization_2dgs` for the last few thousand steps (flat, surface-aligned
-   discs) + depth/normal regularisers, then TSDF- or Poisson-extracts. Reuses
-   the pinned `gsplat`, pairs with `--mask-dir` (clean object mesh) and
-   `--align` (gravity-aligned mesh). `scratchpad/mesh_tsdf.py` is the
-   extraction half already.
+1. **Best mesh today:** `sugar full --method tsdf --mask-dir ...` on a
+   **full-length (30k)** checkpoint. Fix Poisson (swap Open3D for pymeshlab or
+   a GPU implementation) to unlock SuGaR's real extraction quality.
+2. **Bigger win:** `train --mesh` that swaps in `rasterization_2dgs` for the
+   last few thousand steps -- 2D Gaussians are surface-aligned *by
+   construction*, so the flatten regulariser becomes unnecessary and the
+   depth itself is far less noisy.
+3. Upstream SuGaR from its own Docker image if the non-commercial licence is
+   acceptable and you need its published quality.
 
 ## References
 

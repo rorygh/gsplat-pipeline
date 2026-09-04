@@ -166,6 +166,22 @@ See [docs/BACKGROUND_REMOVAL_PLAN.md](docs/BACKGROUND_REMOVAL_PLAN.md) and
 [docs/SEGMENTATION.md](docs/SEGMENTATION.md) (multi-class / instance survey,
 not yet implemented).
 
+### Surface mesh (experimental)
+
+```bash
+gsplat-pipeline sugar --data-dir data/scene --output-dir outputs/scene \
+    --checkpoint outputs/scene/checkpoints/final.pt \
+    --stage full --method tsdf --mask-dir masks/scene/mask
+```
+
+A compact, Apache-licensed take on [SuGaR](https://github.com/Anttwo/SuGaR):
+`stage=align` refines a trained checkpoint with surface-alignment
+regularisers (flatten Gaussians into discs, align to the depth normal);
+`stage=mesh` extracts (`tsdf` = fuse rendered depth; `poisson` = screened
+Poisson off the discs). Does **not** touch `train`. Needs the `mesh` extra
+(`open3d`). Quality caveats + why upstream SuGaR isn't vendored:
+[docs/SURFACE_RECONSTRUCTION.md](docs/SURFACE_RECONSTRUCTION.md).
+
 Already have a COLMAP model from elsewhere (e.g. the Mip-NeRF 360 dataset,
 which ships its sparse model at `<scene>/sparse/0` rather than the
 `sfm` command's default `<output>/sparse/0`)? Skip step 1 and point `train`
@@ -179,7 +195,7 @@ photos: `IMAGE_DIR=photos/ scripts/run_pipeline.sh`.
 
 ```
 src/gsplat_pipeline/
-├── cli.py              entry point (sfm / train / eval / view / colmap-report / mask)
+├── cli.py              entry point (sfm / train / eval / view / colmap-report / mask / sugar)
 ├── colmap/
 │   ├── binary.py        cameras.bin / images.bin / points3D.bin reader
 │   ├── runner.py         subprocess wrapper around the `colmap` CLI
@@ -191,6 +207,7 @@ src/gsplat_pipeline/
 ├── train.py             the training loop
 ├── eval.py              PSNR/SSIM + held-out-view renders
 ├── viewer.py             viser-based interactive viewer
+├── sugar.py             surface-mesh extraction (SuGaR-lite: align + tsdf/poisson)
 └── io.py                checkpoint save/load + .ply export
 ```
 

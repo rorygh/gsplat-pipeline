@@ -102,14 +102,17 @@ function.
   `train.py` masks the photometric loss and adds an alpha->mask term.
   Result: an object-only checkpoint/PLY. Validated on `tissue-paper`
   (see `reports/`). See `docs/BACKGROUND_REMOVAL_PLAN.md`.
+- `sugar.py` (`gsplat-pipeline sugar`) -- SuGaR-lite surface meshing, added as
+  a standalone subcommand that never touches `train.py`. `align` refines a
+  trained checkpoint with flatten / opacify / depth-normal-consistency
+  regularisers; `mesh` extracts (`tsdf` = fuse rendered depth, works;
+  `poisson` = screened Poisson off the discs, currently hangs on Open3D 0.19).
+  `open3d` is the optional `mesh` extra. Why upstream SuGaR isn't vendored (a
+  non-commercial licence *and* an unsolvable pytorch3d/CUDA-11.8 conda env):
+  `docs/SURFACE_RECONSTRUCTION.md`.
 
 ## Not implemented (design notes only)
 
-- **Surface / mesh output** -- `docs/SURFACE_RECONSTRUCTION.md`. SuGaR carries
-  the non-commercial INRIA 3DGS license *and* wouldn't install on the test box
-  (pytorch3d/CUDA-11.8 conda dependency breakage -- documented there). The
-  Apache path is `gsplat.rendering.rasterization_2dgs` + TSDF/Poisson;
-  `reports/tissue-paper/mesh/` has a working TSDF-from-depth prototype.
 - **Multi-class / instance segmentation** -- `docs/SEGMENTATION.md`. Survey of
   2D backbones, 3D lifting (voting vs feature distillation), and the
   instance-consistency problem, with a recommended `--semantic-dir` design.

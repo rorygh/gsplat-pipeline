@@ -29,6 +29,7 @@ viz = ["matplotlib>=3.7.0"]  # gsplat-pipeline colmap-report plots
 # plain `onnxruntime`.
 masks = ["rembg>=2.0.50", "onnxruntime-gpu>=1.18,<1.21"]
 masks-text = ["transformers>=4.44,<4.49"]  # gsplat-pipeline mask --prompt (CLIPSeg; <4.49 keeps torch 2.4 support, uses the CUDA torch pinned above)
+mesh = ["open3d>=0.18"]  # gsplat-pipeline sugar (surface mesh extraction)
 
 [project.scripts]
 gsplat-pipeline = "gsplat_pipeline.cli:main"

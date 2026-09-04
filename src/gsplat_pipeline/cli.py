@@ -192,6 +192,43 @@ def view(checkpoint: Path, port: int = 7007, device: str = "cuda") -> None:
     run_viewer(ViewerConfig(checkpoint=checkpoint, port=port, device=device))
 
 
+@app.command
+def sugar(
+    data_dir: Path,
+    checkpoint: Path,
+    output_dir: Path,
+    stage: Literal["full", "align", "mesh"] = "full",
+    method: Literal["poisson", "tsdf"] = "poisson",
+    colmap_path: Optional[Path] = None,
+    align: bool = True,
+    mask_dir: Optional[Path] = None,
+    align_steps: int = 3000,
+    poisson_depth: int = 9,
+    tsdf_voxel: float = 0.01,
+    device: str = "cuda",
+) -> None:
+    """Extract a surface mesh from a trained checkpoint -- a compact,
+    Apache-licensed take on SuGaR (docs/SURFACE_RECONSTRUCTION.md). Does not
+    touch `train`.
+
+    stage=align: short refinement that flattens Gaussians onto the surface
+    (SuGaR regularisers) -> <output>/surface.pt.
+    stage=mesh:  extract from the checkpoint as-is (poisson = sample the discs +
+    screened Poisson; tsdf = fuse rendered depth).
+    stage=full:  align, then mesh the aligned model.
+
+    Pair with --mask-dir (same masks as training) for a clean object mesh.
+    """
+    from .sugar import SugarConfig, run_sugar
+
+    cfg = SugarConfig(
+        data_dir=data_dir, checkpoint=checkpoint, output_dir=output_dir, method=method,
+        colmap_path=colmap_path, align=align, mask_dir=mask_dir, align_steps=align_steps,
+        poisson_depth=poisson_depth, tsdf_voxel=tsdf_voxel, device=device,
+    )
+    run_sugar(cfg, do_align=stage in ("full", "align"), do_mesh=stage in ("full", "mesh"))
+
+
 def main() -> None:
     app.cli()
 

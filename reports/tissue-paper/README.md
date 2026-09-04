@@ -25,10 +25,19 @@ held-out views:
 
 ## Mesh
 
-`reports/tissue-paper/mesh/` -- [tsdf_mesh_views.png](mesh/tsdf_mesh_views.png)
-+ script. TSDF fusion of the masked splat's rendered depth (Open3D), **38.6 s**,
-1.17 M verts, not watertight, surfaces lumpy. SuGaR proper wouldn't install
-here -- see [docs/SURFACE_RECONSTRUCTION.md](../../docs/SURFACE_RECONSTRUCTION.md).
+`reports/tissue-paper/mesh/`:
+
+| File | What |
+|---|---|
+| [tsdf_mesh_views.png](mesh/tsdf_mesh_views.png) | plain TSDF of the masked splat's rendered depth (Open3D), ~39 s, 1.17 M verts |
+| [sugar_aligned_tsdf_views.png](mesh/sugar_aligned_tsdf_views.png) | `gsplat-pipeline sugar full --method tsdf`: 1500-step surface-alignment refinement (flatten metric 0.16→~0) then TSDF |
+| `mesh_tsdf.py`, `render_mesh.py` | the extraction + render scripts (the `.ply`/`.obj` meshes themselves are gitignored) |
+
+Both are recognisable (box + tissue tuft, correct ~3.0×2.5×2.1 bbox) but
+lumpy/holey -- 3DGS depth is volumetric and the base splat is only 3k steps.
+The Poisson path (SuGaR's actual extraction, off the flattened discs) hangs on
+this Open3D build. Full analysis + why upstream SuGaR isn't vendored:
+[docs/SURFACE_RECONSTRUCTION.md](../../docs/SURFACE_RECONSTRUCTION.md).
 
 ## Read of this run
 
